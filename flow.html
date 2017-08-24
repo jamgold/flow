@@ -1,0 +1,223 @@
+<head>
+  <title>Subscription ID</title>
+</head>
+
+<template name="mainLayout">
+	<nav class="navbar navbar-inverse navbar-fixed-top">
+	  <div class="container">
+	    <div class="navbar-header">
+	      <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar" aria-expanded="false" aria-controls="navbar">
+	        <span class="sr-only">Toggle navigation</span>
+	        <span class="icon-bar"></span>
+	        <span class="icon-bar"></span>
+	        <span class="icon-bar"></span>
+	      </button>
+	      <a class="navbar-brand" href="#">Subscription ID</a>
+	    </div>
+	    <div id="navbar" class="collapse navbar-collapse">
+	      <ul class="nav navbar-nav">
+	      {{#each menu}}
+	        <li class="{{active}}"><a href="{{url}}">{{text}}</a></li>
+	      {{/each}}
+	      </ul>
+	    </div><!--/.nav-collapse -->
+	  </div>
+	</nav>
+
+	<div class="container">
+		<div class="main">
+		{{> Template.dynamic template=header}}
+		{{> Template.dynamic template=main}}
+		</div>
+	</div>
+</template>
+
+<template name="header">
+	<h1 class="title">Welcome to Meteor!</h1>
+	<h6>Template: <strong>{{main}}</strong>, slug: {{slug}},  {{maxCollectionCount}} documents in the collection</h6>
+</template>
+
+<template name="hello">
+	<div class="content animated fadeIn">
+	{{extra}}
+		<h3>This is a simple demo using <a href="https://github.com/kadirahq/flow-router">Flow Router</a> and <a href="https://github.com/kadirahq/blaze-layout">Blaze Layout</a> to show subscriptions and latency compensation.</h3>
+
+		<h3>
+		When Meteor subscribes to a collection, the publish function on the server pushes the resulting documents to the client 
+		and the subscription is flagged as ready.
+		</h3>
+
+		<h3>
+		When the subscription changes, the client still has the documents of the previous subscription stored, so when the new 
+		subscription is flagged ready, there is a time when there are more documents available than the new subscription yielded. 
+		</h3>
+
+		<h3>
+		The subscribed collection is cleaned up on the client asynchronously.
+		Since collection cursors are reactive, this cleanup is visible on the page.
+		</h3>
+
+		<h3>This demo comes with a collection pre-populated with ~2000 documents containing a random number. Page1 and Page2 subscribe to different sets of the 
+		same collection. When switching between the routes, you can see how the layout waits for the subscription to be ready. Unless 
+		you enable the <i>SubscriptionId Filter</i> you will see the above described phenomenon of reactive changes.</h3>
+		<pre><code> Meteor.startup(function () &#123;
+  var maxCount = 2000;
+  // code to run on server at startup
+  if(Collection.find().count() &lt; maxCount)
+  &#123;
+    for(var i=Collection.find().count();i &lt; maxCount;i++)
+    &#123;
+      Collection.insert(&#123;
+        counter: i,
+        created: new Date(),
+        random: getRandomInt(0, 10000)
+      &#125;)
+    &#125;
+  &#125;
+&#125;); </code> </pre>
+
+	<p>The solution to this <i>problem</i> is in the publication of the collection: we need to add the subscriptionId to every document.</p>
+	<pre><code>Meteor.publish('collection', function(query, options) {
+  var self = this;
+  query = query || {};
+  options = options || {};
+  var index = 1;
+  var handle = Collection.find( query, options ).observeChanges({
+    added: function (id, fields) {
+      fields._subscriptionId = self._subscriptionId;
+      fields.index = index++;
+      self.added('collection', id, fields);
+    }, // Use either added() OR(!) addedBefore()
+    removed: function (id) {
+      self.removed('collection', id);
+    }
+  });
+  self.ready();
+  self.onStop(function () {
+    handle.stop();
+  });
+});</code></pre>
+	<p>so we can selectively display the documents from the subscription on the client.</p>
+	<pre><code>FlowRouter.route('/page1',{
+  subscriptions: function(params, queryParams) {
+    this.minNum = 1000;
+    // store subscription in a variable
+    var subscription = Meteor.subscribe('collection', {random: {$lt: this.minNum}},{sort:{random:1},limit:this.minNum} );
+    // store subscriptionId in router object
+    this.subscriptionId = subscription.subscriptionId;
+    this.register('page1', subscription );
+  },
+  action: function(params) {
+    BlazeLayout.render("mainLayout", {
+      header: "header", main: "page1"
+    });
+  }
+});
+//
+// register template helper to get cursor for collection
+//
+Template.registerHelper('collection', function(){
+  // get the subscriptionId of the current route
+  var subscriptionId = FlowRouter.current().route.subscriptionId;
+  // query documents from collection with correct subscriptionId if checkmark is set
+  var query = Session.get('subscriptionIdFilter') ? {_subscriptionId: subscriptionId} : {};
+  var cursor = Collection.find(query,{sort:{counter:1}});
+  Session.set('collectionCount', cursor.count());
+  return cursor;
+});</code></pre>
+	</div>
+</template>
+
+<template name="caption">
+	Documents in the minimongo collection on the client: 
+	{{#if miniMongoReady}}
+	<strong>{{collectionCount}}</strong>
+	{{else}}
+	<span style="color:red">{{collectionCount}}</span>
+	{{/if}}
+	, Subscription ID: {{subscriptionId}}
+	<br/>
+	<input type="checkbox" {{checked}} value="1"> Filter collection for Subscription ID
+</template>
+
+
+<template name="thead">
+	<thead>
+		<tr><th>#</th><th><b>Random Number</b></th><th>Insert Counter</th><th>SubscriptionId</th><th>_id</th></tr>
+	</thead>
+</template>
+
+<template name="row">
+	<tr><td>{{index}}</td><td>{{random}}</td><td> {{counter}}</td><td>{{_subscriptionId}}</td><td>{{_id}}</td></tr>
+</template>
+
+<template name="page1">
+	<div class="content animated fadeIn">
+
+	<h2>Page 1 (Random Number &lt; {{minNum}}) {{pageCount}} Documents expected</h2>
+	{{#if subsReady "page1"}}
+		<h3>FlowRouter Subscription Ready</h3>
+		<table class="table ">
+			<caption>{{>caption}}</caption>
+			{{>thead}}
+			<tbody>
+				{{#each collection}}
+					{{>row}}
+				{{/each}}
+			</tbody>
+		</table>
+	{{else}}
+		<h3>FlowRouter Subscription</h3>
+		<h2 align="center">Loading ...</h2>
+	{{/if}}
+	</div>
+</template>
+
+<template name="page2">
+	<div class="content animated fadeIn">
+
+	<h2>Page 2 (Random Number &gt; {{minNum}} and &lt; 5000) {{pageCount}} Documents expected</h2>
+	{{#if subsReady "page2"}}
+		<h3>FlowRouter Subscription Ready</h3>
+		<table class="table ">
+			<caption>{{>caption}}</caption>
+			{{>thead}}
+			<tbody>	
+			{{#each collection}}
+				{{>row}}
+			{{/each}}
+			</tbody>
+		</table>
+	{{else}}
+		<h3>FlowRouter Subscription</h3>
+		<h2 align="center">Loading ...</h2>
+	{{/if}}
+	</div>
+</template>
+
+<template name="page3">
+	<div class="content animated fadeIn">
+	<h2>Page 3 (Random Number &gt; {{minNum}}) {{pageCount}} Documents expected</h2>
+	{{#if Template.subscriptionsReady}}
+	<h3>Template Level Subscription Ready</h3>
+	<table class="table ">
+		<caption>{{>caption}}</caption>
+		{{>thead}}
+		<tbody>
+			{{#each entries}}
+				{{>row}}
+			{{/each}}
+		</tbody>
+	</table>
+	{{else}}
+	<h3>Template Level Subscription</h3>
+	<h2 align="center">Loading ...</h2>
+	{{/if}}
+	</div>
+</template>
+
+<template name="notFound">
+	<div class="content animated bounceIn">
+		<h1>Page not found</h1>
+	</div>
+</template>
